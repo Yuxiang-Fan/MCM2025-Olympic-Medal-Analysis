@@ -1,121 +1,126 @@
 import pandas as pd
 import numpy as np
+import warnings
 from sklearn.linear_model import LassoCV
 from sklearn.preprocessing import StandardScaler
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from scipy.stats import pearsonr, ttest_ind
-import warnings
+
 warnings.filterwarnings('ignore')
 
 def load_task3_data():
     """
-    [数据加载占位]
-    期望维度: (N_样本, M_特征) -> 一行代表某国在某届奥运会的表现
+    构造包含多重共线性的模拟数据，确保脚本可独立运行验证
+    实际工程中应替换为真实的赛事数据
+    """
+    np.random.seed(42)
+    n_samples = 150
     
-    必须包含的列 (Schema):
-    - 'Country': 国家名称 (str)
-    - 'Year': 奥运会年份 (int)
-    - 'Total_Medals': 该国当届获得的奖牌总数 (y_i)
-    - 'Host': 是否为当届东道主 (1 为是，0 为否)
-    - [赛事列1], [赛事列2] ...: 如 'Archery', 'Athletics' 等，代表该国在该项目获得的奖牌数 (x_ij)
-    """
-    df = pd.DataFrame()
-    # 实际运行时，请替换为: df = pd.read_csv('your_data_path.csv')
-    return df
+    data = {
+        'Country': ['Country_' + str(i % 15) for i in range(n_samples)],
+        'Year': [2000 + (i % 6) * 4 for i in range(n_samples)],
+        'Total_Medals': np.random.poisson(lam=20, size=n_samples),
+        'Host': np.random.binomial(n=1, p=0.05, size=n_samples),
+        'Athletics': np.random.poisson(lam=5, size=n_samples),
+        'Swimming': np.random.poisson(lam=4, size=n_samples),
+        'Gymnastics': np.random.poisson(lam=3, size=n_samples),
+        'Shooting': np.random.poisson(lam=2, size=n_samples)
+    }
+    
+    # 刻意制造高度共线性的特征：假设跳水奖牌数与游泳高度绑定
+    data['Diving'] = [x + np.random.poisson(lam=1) for x in data['Swimming']]
+    
+    return pd.DataFrame(data)
 
-def check_and_remove_vif(X, threshold=10.0):
+def filter_features_by_vif(X, threshold=10.0):
     """
-    计算方差膨胀因子 (VIF)，剔除多重共线性较高的赛事特征
+    计算VIF并剔除多重共线性严重的特征，防止回归系数失真
     """
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
-    X_scaled_df = pd.DataFrame(X_scaled, columns=X.columns)
     
     vif_data = pd.DataFrame()
-    vif_data["Feature"] = X_scaled_df.columns
-    vif_data["VIF"] = [variance_inflation_factor(X_scaled_df.values, i) 
-                       for i in range(len(X_scaled_df.columns))]
+    vif_data["Feature"] = X.columns
+    vif_data["VIF"] = [variance_inflation_factor(X_scaled, i) for i in range(X_scaled.shape[1])]
     
+    # 保留VIF处于安全阈值内的特征
     valid_features = vif_data[vif_data["VIF"] < threshold]["Feature"].tolist()
     return X[valid_features], vif_data
 
-def run_lasso_regression(X, y):
+def extract_lasso_coefs(X, y):
     """
-    Lasso 回归模型，最小化目标函数提取各项目系数
+    利用带交叉验证的Lasso回归进行特征降维，提取对总奖牌贡献最大的核心项目
     """
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
-    lasso = LassoCV(cv=5, random_state=42).fit(X_scaled, y)
+    # LassoCV自动在正则化路径上寻找最优的惩罚系数
+    lasso = LassoCV(cv=5, random_state=42, n_jobs=-1).fit(X_scaled, y)
     
-    coefficients = pd.DataFrame({
-        'Sports Events': X.columns,
-        'Lasso Regression Coefficient': lasso.coef_
+    coef_df = pd.DataFrame({
+        'Sport': X.columns,
+        'Coefficient': lasso.coef_
     })
     
-    coefficients['Abs_Coef'] = coefficients['Lasso Regression Coefficient'].abs()
-    coefficients = coefficients.sort_values(by='Abs_Coef', ascending=False).drop(columns=['Abs_Coef'])
+    # 剔除被Lasso压缩为0的无关特征，并按绝对值降序
+    coef_df['Abs_Coef'] = coef_df['Coefficient'].abs()
+    coef_df = coef_df[coef_df['Abs_Coef'] > 0].sort_values(by='Abs_Coef', ascending=False)
+    coef_df = coef_df.drop(columns=['Abs_Coef'])
     
-    return coefficients
+    return coef_df
 
 def analyze_host_effect(df):
     """
-    探究东道主信息造成的奖牌数变化
+    从相关性和均值差异两个维度验证东道主效应
     """
-    # 1. Pearson 相关系数计算
-    host_info = df['Host']
-    y = df['Total_Medals']
-    correlation, pearson_p = pearsonr(host_info, y)
-    print(f"Pearson 相关系数: {correlation:.4f} (p-value: {pearson_p:.2e})")
+    # 1. Pearson相关性分析
+    corr, p_pearson = pearsonr(df['Host'], df['Total_Medals'])
+    print(f"Host与总奖牌的Pearson相关系数: {corr:.4f} (p-value: {p_pearson:.2e})")
     
-    # 2. t-test 显著性检验
-    host_1 = df[df['Host'] == 1]['Total_Medals']
-    host_0 = df[df['Host'] == 0]['Total_Medals']
-    t_stat, t_p_value = ttest_ind(host_1, host_0, equal_var=False)
-    print(f"东道主与非东道主总奖牌 t-test p-value: {t_p_value:.2e}")
+    # 2. 独立样本t检验 (不假设方差齐性)
+    host_medals = df[df['Host'] == 1]['Total_Medals']
+    non_host_medals = df[df['Host'] == 0]['Total_Medals']
+    t_stat, p_t = ttest_ind(host_medals, non_host_medals, equal_var=False)
+    print(f"东道主效应独立样本t检验 p-value: {p_t:.2e}")
     
-    # 3. 奖牌变化密度 (Medal Variation Density) 计算
-    df_sorted = df.sort_values(by=['Country', 'Year'])
-    df_sorted['Medals_Change_Density'] = (df_sorted.groupby('Country')['Total_Medals'].diff().abs() / df_sorted['Total_Medals']) * 100
+    # 3. 奖牌波动率计算
+    df_sorted = df.sort_values(by=['Country', 'Year']).copy()
+    # 避免除以0的警告
+    medals_denom = df_sorted['Total_Medals'].replace(0, np.nan)
+    df_sorted['Medals_Change_Density'] = (df_sorted.groupby('Country')['Total_Medals'].diff().abs() / medals_denom) * 100
     
-    # 根据规则对事件进行分类
-    def classify_event(x):
-        if pd.isna(x):
+    def classify_event(val):
+        if pd.isna(val):
             return 'Unknown'
-        elif x > 10:
-            return 'Dominant Event'
-        elif x > 5:
-            return 'Neutral Event'
+        elif val > 10:
+            return 'Dominant'
+        elif val > 5:
+            return 'Neutral'
         else:
-            return 'Minor Event'
+            return 'Minor'
             
-    df_sorted['Event_Classification'] = df_sorted['Medals_Change_Density'].apply(classify_event)
+    df_sorted['Event_Class'] = df_sorted['Medals_Change_Density'].apply(classify_event)
     return df_sorted
 
 def main():
     df = load_task3_data()
     
-    if df.empty:
-        print("提示：检测到空数据集。请查阅 README 接入真实数据后运行。")
-        return
-
-    # 从 DataFrame 中分离目标变量和赛事特征矩阵
     y = df['Total_Medals']
-    # 假设除了 Country, Year, Total_Medals, Host 外，其余均为赛事列
-    non_event_cols = ['Country', 'Year', 'Total_Medals', 'Host']
-    X = df.drop(columns=[col for col in non_event_cols if col in df.columns])
+    # 分离非赛事类特征，留下纯体育项目矩阵
+    meta_cols = ['Country', 'Year', 'Total_Medals', 'Host']
+    X = df.drop(columns=[col for col in meta_cols if col in df.columns])
     
-    print("--- 1. VIF 共线性检验 ---")
-    X_valid, vif_res = check_and_remove_vif(X)
+    print(">>> 1. 执行VIF共线性诊断")
+    X_valid, vif_res = filter_features_by_vif(X)
+    print("剔除的高共线性特征:", set(X.columns) - set(X_valid.columns))
     
-    print("\n--- 2. Lasso 回归项目重要性提取 ---")
-    lasso_coefs = run_lasso_regression(X_valid, y)
-    print("重要性前 10 的体育项目:")
-    print(lasso_coefs.head(10))
+    print("\n>>> 2. Lasso特征选择结果")
+    lasso_coefs = extract_lasso_coefs(X_valid, y)
+    print("对总奖牌贡献显著的体育项目:\n", lasso_coefs.head(10))
     
-    print("\n--- 3. 东道主效应深度分析 ---")
+    print("\n>>> 3. 东道主效应统计检验")
     density_df = analyze_host_effect(df)
-    print("\n奖牌变化密度及分类提取完毕。")
+    print("\n[状态] 任务3多重共线性处理与效应检验完成。")
 
 if __name__ == "__main__":
     main()

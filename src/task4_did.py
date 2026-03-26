@@ -3,135 +3,141 @@ import numpy as np
 import statsmodels.formula.api as smf
 from sklearn.metrics.pairwise import cosine_similarity
 import warnings
+
 warnings.filterwarnings('ignore')
 
-def load_task4_data():
+def generate_mock_medal_data():
     """
-    [数据加载占位]
-    维度: (N_样本, 4) -> 每一行代表某国在某年某项目上的获奖情况
-    
-    必须包含的列 (Schema):
-    - 'Year': 奥运会年份 (int)
-    - 'Country': 国家名称 (str)
-    - 'Sport': 体育项目名称，如 'Volleyball', 'Baseball' 等 (str)
-    - 'Medal': 奖牌类型，取值为 'Gold', 'Silver', 'Bronze' 或 'None'/'NaN'
+    构造模拟的奥运奖牌明细数据，确保脚本可直接运行验证逻辑
+    包含年份、国家、项目及奖牌类型
     """
-    df = pd.DataFrame(columns=['Year', 'Country', 'Sport', 'Medal'])
-    # 实际运行时，请替换为: df = pd.read_csv('your_medal_details.csv')
-    return df
-
-def preprocess_did_data(df):
-    """
-    数据预处理与 DID 哑变量构造
-    """
-    # 1. 奖牌量化赋值 (Gold=3, Silver=2, Bronze=1, 无奖牌=0)
-    medal_map = {'Gold': 3, 'Silver': 2, 'Bronze': 1, 'None': 0}
-    df['Medal_num'] = df['Medal'].map(medal_map).fillna(0)
+    np.random.seed(42)
+    years = [2004, 2008, 2012, 2016, 2020, 2024]
+    countries = ['China', 'United States', 'Cuba', 'Japan', 'Italy', 'Brazil']
+    sports = ['Volleyball', 'Swimming', 'Athletics']
     
-    # 2. 构造双重差分 (DID) 需要的哑变量 (Dummy Variables)
-    # Treat 变量：是否为干预组
-    df['Treat_USA'] = (df['Country'] == 'United States').astype(int)
-    df['Treat_China'] = (df['Country'] == 'China').astype(int)
-    
-    # Post 变量：干预发生后的时间截面
-    # 郎平 2008 年后执教美国队，2016 年起执教中国队
-    df['Post_USA'] = ((df['Year'] > 2008) & (df['Country'] == 'United States')).astype(int)
-    df['Post_China'] = ((df['Year'] >= 2016) & (df['Country'] == 'China')).astype(int)
-    
-    return df
-
-def run_did_model(df):
-    """
-    运行双重差分模型评估郎平执教效应
-    """
-    # 筛选女排赛事数据进行模型拟合
-    volleyball_df = df[df['Sport'] == 'Volleyball'].copy()
-    
-    if volleyball_df.empty:
-        return None, None
-        
-    # DID 回归公式 (结合国家和年份固定效应)
-    formula = "Medal_num ~ C(Treat_USA):C(Post_USA) + C(Treat_China):C(Post_China) + C(Year) + C(Country)"
-    
-    # 使用 OLS 拟合模型
-    model = smf.ols(formula, data=volleyball_df).fit()
-    
-    # 提取交叉项系数 (即名帅效应带来的额外奖牌数量)
-    beta_usa = model.params.get('C(Treat_USA)[T.1]:C(Post_USA)[T.1]', np.nan)
-    p_value_usa = model.pvalues.get('C(Treat_USA)[T.1]:C(Post_USA)[T.1]', np.nan)
-    
-    beta_china = model.params.get('C(Treat_China)[T.1]:C(Post_China)[T.1]', np.nan)
-    p_value_china = model.pvalues.get('C(Treat_China)[T.1]:C(Post_China)[T.1]', np.nan)
-    
-    print("\n--- 郎平执教效应 (DID 评估结果) ---")
-    print(f"对美国队的影响系数 (beta_3): {beta_usa:.4f}, p-value: {p_value_usa:.4f}")
-    print(f"对中国队的影响系数 (beta_6): {beta_china:.4f}, p-value: {p_value_china:.4f}")
-    
-    return beta_usa, beta_china
-
-def identify_potential_projects(df, target_countries):
-    """
-    寻找目标国家(如古巴、日本、意大利)需要引入名帅的潜力项目
-    判定标准：2016年以前获得过至少2枚奖牌，但2016年及以后获得0枚奖牌
-    """
-    potential_projects = []
-    
-    for country in target_countries:
-        country_df = df[df['Country'] == country]
-        if country_df.empty:
-            continue
-            
-        sports = country_df['Sport'].unique()
-        for sport in sports:
-            sport_df = country_df[country_df['Sport'] == sport]
-            
-            # 2016年前的奖牌数
-            pre_2016_medals = sport_df[sport_df['Year'] < 2016]['Medal_num'].sum()
-            # 2016年及以后的奖牌数
-            post_2016_medals = sport_df[sport_df['Year'] >= 2016]['Medal_num'].sum()
-            
-            if pre_2016_medals >= 2 and post_2016_medals == 0:
-                potential_projects.append({'Country': country, 'Sport': sport})
+    data = []
+    for y in years:
+        for c in countries:
+            for s in sports:
+                # 随机生成奖牌，模拟女排项目在中美执教前后的表现变化
+                medal = 'None'
+                prob = np.random.rand()
+                if s == 'Volleyball':
+                    # 模拟郎平执教后的效应提升
+                    if (c == 'United States' and 2008 < y <= 2012) or (c == 'China' and y >= 2016):
+                        prob += 0.4
                 
-    return pd.DataFrame(potential_projects)
+                if prob > 0.9: medal = 'Gold'
+                elif prob > 0.7: medal = 'Silver'
+                elif prob > 0.5: medal = 'Bronze'
+                
+                data.append([y, c, s, medal])
+                
+    return pd.DataFrame(data, columns=['Year', 'Country', 'Sport', 'Medal'])
 
-def calculate_similarity_and_transfer(df, target_country, pre_coach_years):
+def build_did_features(df):
     """
-    扩展报告 7.4：使用余弦相似度进行效应迁移评估
-    通过对比目标国家与中美在名帅执教前5届的战绩相似度，来决定效应迁移的权重
+    量化奖牌得分并构造DID回归所需的交互项
     """
-    # 占位：实际需提取向量并执行 cosine_similarity([vec_target], [vec_source])
-    # 这里仅为展示计算逻辑框架
-    print(f"正在计算 {target_country} 与中美队伍的余弦相似度以分配名帅效应权重...")
-    # 假设计算得出的相似度权重矩阵
-    similarity_weight = 0.85 
-    return similarity_weight
+    # 奖牌权重赋值：金3银2铜1
+    m_map = {'Gold': 3, 'Silver': 2, 'Bronze': 1, 'None': 0}
+    df['Medal_Score'] = df['Medal'].map(m_map).fillna(0)
+    
+    # 构造实验组标识 Treat
+    df['Is_USA'] = (df['Country'] == 'United States').astype(int)
+    df['Is_CHN'] = (df['Country'] == 'China').astype(int)
+    
+    # 构造政策发生时间标识 Post
+    # 设定美国队效应期为2008年后，中国队为2016年后
+    df['After_Coach_USA'] = ((df['Year'] > 2008) & (df['Country'] == 'United States')).astype(int)
+    df['After_Coach_CHN'] = ((df['Year'] >= 2016) & (df['Country'] == 'China')).astype(int)
+    
+    return df
+
+def fit_did_impact(df):
+    """
+    使用OLS拟合双重差分模型，提取名帅执教的净效应系数
+    """
+    vball_data = df[df['Sport'] == 'Volleyball'].copy()
+    
+    if vball_data.empty:
+        return None
+        
+    # 定义DID模型公式：包含国家与年份的固定效应
+    # 核心关注交叉项 Is_USA:After_Coach_USA 的系数
+    formula = "Medal_Score ~ Is_USA:After_Coach_USA + Is_CHN:After_Coach_CHN + C(Year) + C(Country)"
+    
+    res = smf.ols(formula, data=vball_data).fit()
+    
+    # 提取评估系数与显著性P值
+    res_summary = {
+        'USA_Effect': res.params.get('Is_USA:After_Coach_USA', 0),
+        'USA_P': res.pvalues.get('Is_USA:After_Coach_USA', 1),
+        'CHN_Effect': res.params.get('Is_CHN:After_Coach_CHN', 0),
+        'CHN_P': res.pvalues.get('Is_CHN:After_Coach_CHN', 1)
+    }
+    
+    print("\n[DID模型估计结果]")
+    print(f"美国队执教增益: {res_summary['USA_Effect']:.3f} (P={res_summary['USA_P']:.4f})")
+    print(f"中国队执教增益: {res_summary['CHN_Effect']:.3f} (P={res_summary['CHN_P']:.4f})")
+    
+    return res_summary
+
+def find_investment_targets(df, target_list):
+    """
+    筛选曾有辉煌历史但近期表现断档的项目，作为名帅引进的潜力目标
+    """
+    targets = []
+    for country in target_list:
+        c_df = df[df['Country'] == country]
+        for sport in c_df['Sport'].unique():
+            s_df = c_df[c_df['Sport'] == sport]
+            # 对比2016年前后的表现差
+            pre_val = s_df[s_df['Year'] < 2016]['Medal_Score'].sum()
+            post_val = s_df[s_df['Year'] >= 2016]['Medal_Score'].sum()
+            
+            if pre_val >= 2 and post_val == 0:
+                targets.append({'Country': country, 'Sport': sport, 'Gap': pre_val})
+                
+    return pd.DataFrame(targets)
+
+def eval_effect_transfer(df, target_country):
+    """
+    利用Cosine Similarity计算目标国家与中美队伍的战绩相似度
+    以此作为名帅效应迁移的参考权重
+    """
+    # 提取各年度奖牌得分作为特征向量
+    pivot_df = df.pivot_table(index='Country', columns='Year', values='Medal_Score', aggfunc='sum').fillna(0)
+    
+    if target_country not in pivot_df.index:
+        return 0
+        
+    vec_target = pivot_df.loc[[target_country]].values
+    vec_china = pivot_df.loc[['China']].values
+    
+    # 计算余弦相似度
+    sim = cosine_similarity(vec_target, vec_china)[0][0]
+    print(f"\n{target_country} 与中国队的历史战绩余弦相似度: {sim:.4f}")
+    return sim
 
 def main():
-    df = load_task4_data()
+    # 数据加载
+    df = generate_mock_medal_data()
     
-    if df.empty:
-        print("提示：检测到空数据集。请查阅 README 接入真实明细数据后运行。")
-        return
+    # 特征工程
+    df = build_did_features(df)
+    
+    # 任务4核心：DID因果推断
+    did_results = fit_did_impact(df)
+    
+    # 寻找潜力投资项目
+    potential_df = find_investment_targets(df, ['Cuba', 'Japan', 'Italy'])
+    if not potential_df.empty:
+        print("\n建议引入名帅的潜力方向:\n", potential_df)
         
-    print("--- 1. 数据预处理与变量构造 ---")
-    df = preprocess_did_data(df)
-    
-    print("\n--- 2. 双重差分 (DID) 模型拟合 ---")
-    beta_usa, beta_china = run_did_model(df)
-    
-    print("\n--- 3. 寻找急需名帅投资的潜力项目 ---")
-    target_countries = ['Cuba', 'Japan', 'Italy']
-    projects_df = identify_potential_projects(df, target_countries)
-    
-    if not projects_df.empty:
-        print(f"筛选出符合标准（曾有辉煌但近期断档）的潜力项目：\n{projects_df}")
-    else:
-        print("（由于接入的是空数据集，暂无匹配的潜力项目输出）")
-        
-    print("\n--- 4. (报告 7.4) 基于余弦相似度的效应迁移评估 ---")
-    # 模拟对阿尔及利亚或阿根廷等目标国家进行相似度计算
-    calculate_similarity_and_transfer(df, "Argentina", pre_coach_years=5)
+    # 效应迁移分析
+    eval_effect_transfer(df, "Cuba")
 
 if __name__ == "__main__":
     main()
